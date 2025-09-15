@@ -179,91 +179,241 @@ export default function EditProfile() {
 
     setSaving(true);
     try {
-      const profileData = {
+      // Get existing profile data to compare states
+      const existingProfile = await DatabaseService.getProfileById(parseInt(id));
+      if (!existingProfile) {
+        throw new Error('Profile not found');
+      }
+      
+      // Prepare base profile data
+      const baseProfileData = {
         ...profile,
         id: parseInt(id),
       };
       
-      // Handle gift reminder scheduling/unscheduling
-      const existingProfile = await DatabaseService.getProfileById(parseInt(id));
-      const wasGiftReminderEnabled = Boolean(existingProfile?.giftReminderEnabled);
+      // Update the base profile first
+      await DatabaseService.createOrUpdateProfile(baseProfileData);
+      
+      // Track scheduling results
+      let birthdayTextResult = { scheduled: false, error: null, date: null };
+      let giftReminderResult = { scheduled: false, error: null, date: null };
+      
+      // Handle birthday text scheduling independently
+      const wasBirthdayTextEnabled = Boolean(existingProfile.birthdayTextEnabled);
+      const isBirthdayTextEnabled = Boolean(profile.birthdayTextEnabled);
+      const birthdayChanged = existingProfile.birthday !== profile.birthday;
+      const phoneChanged = existingProfile.phone !== profile.phone;
+      
+      if (isBirthdayTextEnabled && profile.phone && profile.birthday) {
+        // Birthday text is enabled and requirements are met
+        if (!wasBirthdayTextEnabled || birthdayChanged || phoneChanged) {
+          // Either newly enabled or key data changed - reschedule
+          try {
+            console.log('Scheduling/rescheduling birthday text for profile:', id);
+            
+            // Cancel existing if it exists
+            if (existingProfile.birthdayTextScheduledTextId) {
+              const existingScheduledText = await DatabaseService.getScheduledTextById(existingProfile.birthdayTextScheduledTextId);
+              if (existingScheduledText?.notificationId) {
+                const { cancelById } = await import('@/services/Scheduler');
+                await cancelById(existingScheduledText.notificationId);
+              }
+              await DatabaseService.deleteScheduledText(existingProfile.birthdayTextScheduledTextId);
+            }
+            
+            // Calculate next birthday occurrence
+            const [month, day, year] = profile.birthday.split('/').map(num => parseInt(num));
+            const currentYear = new Date().getFullYear();
+            let birthdayThisYear = new Date(currentYear, month - 1, day, 9, 0, 0, 0); // 9 AM
+            
+            // If birthday has passed this year, schedule for next year
+            if (birthdayThisYear <= new Date()) {
+              birthdayThisYear = new Date(currentYear + 1, month - 1, day, 9, 0, 0, 0);
+            }
+            
+            // Create new scheduled text entry
+            const scheduledTextData = {
+              profileId: parseInt(id),
+              phoneNumber: profile.phone,
+              message: 'Happy Birthday!!',
+              scheduledFor: birthdayThisYear,
+            };
+            
+            const scheduledTextId = await DatabaseService.createScheduledText(scheduledTextData);
+            
+            // Schedule the notification
+            const result = await scheduleBirthdayText({
+              messageId: scheduledTextId.toString(),
+              phoneNumber: profile.phone,
+              message: 'Happy Birthday!!',
+              datePick: birthdayThisYear,
+              timePick: birthdayThisYear,
+              profileId: id,
+            });
+            
+            // Update notification ID in scheduled text
+            if (result.id) {
+              await DatabaseService.updateScheduledTextNotificationId(scheduledTextId, result.id);
+            }
+            
+            // Update profile with birthday text info
+            await DatabaseService.updateProfileBirthdayTextStatus(parseInt(id), true, scheduledTextId);
+            
+            birthdayTextResult = { scheduled: true, error: null, date: birthdayThisYear };
+            console.log('Birthday text scheduled successfully');
+          } catch (birthdayError) {
+            console.error('Error scheduling birthday text:', birthdayError);
+            birthdayTextResult = { scheduled: false, error: birthdayError.message, date: null };
+            // Update profile to disable birthday text if scheduling failed
+            await DatabaseService.updateProfileBirthdayTextStatus(parseInt(id), false, null);
+          }
+        }
+        // If enabled but no changes needed, keep existing state
+      } else if (wasBirthdayTextEnabled && !isBirthdayTextEnabled) {
+        // Birthday text is being disabled
+        try {
+          console.log('Disabling birthday text for profile:', id);
+          
+          if (existingProfile.birthdayTextScheduledTextId) {
+            const existingScheduledText = await DatabaseService.getScheduledTextById(existingProfile.birthdayTextScheduledTextId);
+            if (existingScheduledText?.notificationId) {
+              const { cancelById } = await import('@/services/Scheduler');
+              await cancelById(existingScheduledText.notificationId);
+            }
+            await DatabaseService.deleteScheduledText(existingProfile.birthdayTextScheduledTextId);
+          }
+          
+          await DatabaseService.updateProfileBirthdayTextStatus(parseInt(id), false, null);
+          console.log('Birthday text disabled successfully');
+        } catch (error) {
+          console.error('Error disabling birthday text:', error);
+        }
+      }
+      
+      // Handle gift reminder scheduling independently
+      const wasGiftReminderEnabled = Boolean(existingProfile.giftReminderEnabled);
       const isGiftReminderEnabled = Boolean(profile.giftReminderEnabled);
       
-      // If gift reminder is being enabled
-      if (isGiftReminderEnabled && !wasGiftReminderEnabled && profile.birthday) {
+      if (isGiftReminderEnabled && profile.birthday) {
+        // Gift reminder is enabled and requirements are met
+        if (!wasGiftReminderEnabled || birthdayChanged) {
+          // Either newly enabled or birthday changed - reschedule
+          try {
+            console.log('Scheduling/rescheduling gift reminder for profile:', id);
+            
+            // Cancel existing if it exists
+            if (existingProfile.giftReminderId) {
+              const existingReminder = await DatabaseService.getReminderById(existingProfile.giftReminderId);
+              if (existingReminder?.notificationId) {
+                const { cancelById } = await import('@/services/Scheduler');
+                await cancelById(existingReminder.notificationId);
+              }
+              await DatabaseService.deleteReminder(existingProfile.giftReminderId);
+            }
+            
+            // Calculate next birthday occurrence
+            const [month, day, year] = profile.birthday.split('/').map(num => parseInt(num));
+            const currentYear = new Date().getFullYear();
+            let birthdayThisYear = new Date(currentYear, month - 1, day, 9, 0, 0, 0); // 9 AM
+            
+            // If birthday has passed this year, schedule for next year
+            if (birthdayThisYear <= new Date()) {
+              birthdayThisYear = new Date(currentYear + 1, month - 1, day, 9, 0, 0, 0);
+            }
+            
+            // Calculate 21 days before birthday
+            const giftReminderDate = new Date(birthdayThisYear);
+            giftReminderDate.setDate(giftReminderDate.getDate() - 21);
+            
+            // Create reminder entry
+            const reminderData = {
+              profileId: parseInt(id),
+              title: `Get Gift for ${profile.name}`,
+              description: 'Their birthday is in 3 weeks!!',
+              type: 'general',
+              scheduledFor: giftReminderDate,
+            };
+            
+            const reminderId = await DatabaseService.createReminder(reminderData);
+            
+            // Schedule the notification
+            const { scheduleReminder } = await import('@/services/Scheduler');
+            const result = await scheduleReminder({
+              title: `Get Gift for ${profile.name}`,
+              body: 'Their birthday is in 3 weeks!!',
+              datePick: giftReminderDate,
+              timePick: giftReminderDate,
+              reminderId: reminderId.toString(),
+              isGiftReminder: true,
+              profileId: id,
+            });
+            
+            // Update notification ID in reminder
+            if (result.id) {
+              await DatabaseService.updateReminderNotificationId(reminderId, result.id);
+            }
+            
+            // Update profile with gift reminder info
+            await DatabaseService.updateProfileGiftReminderStatus(parseInt(id), true, reminderId);
+            
+            giftReminderResult = { scheduled: true, error: null, date: giftReminderDate };
+            console.log('Gift reminder scheduled successfully');
+          } catch (giftReminderError) {
+            console.error('Error scheduling gift reminder:', giftReminderError);
+            giftReminderResult = { scheduled: false, error: giftReminderError.message, date: null };
+            // Update profile to disable gift reminder if scheduling failed
+            await DatabaseService.updateProfileGiftReminderStatus(parseInt(id), false, null);
+          }
+        }
+        // If enabled but no changes needed, keep existing state
+      } else if (wasGiftReminderEnabled && !isGiftReminderEnabled) {
+        // Gift reminder is being disabled
         try {
-          // Calculate next birthday occurrence
-          const [month, day, year] = profile.birthday.split('/').map(num => parseInt(num));
-          const currentYear = new Date().getFullYear();
-          let birthdayThisYear = new Date(currentYear, month - 1, day, 9, 0, 0, 0); // 9 AM
+          console.log('Disabling gift reminder for profile:', id);
           
-          // If birthday has passed this year, schedule for next year
-          if (birthdayThisYear <= new Date()) {
-            birthdayThisYear = new Date(currentYear + 1, month - 1, day, 9, 0, 0, 0);
+          if (existingProfile.giftReminderId) {
+            const existingReminder = await DatabaseService.getReminderById(existingProfile.giftReminderId);
+            if (existingReminder?.notificationId) {
+              const { cancelById } = await import('@/services/Scheduler');
+              await cancelById(existingReminder.notificationId);
+            }
+            await DatabaseService.deleteReminder(existingProfile.giftReminderId);
           }
           
-          // Calculate 21 days before birthday
-          const giftReminderDate = new Date(birthdayThisYear);
-          giftReminderDate.setDate(giftReminderDate.getDate() - 21);
-          
-          // Create reminder entry
-          const reminderData = {
-            profileId: parseInt(id),
-            title: `Get Gift for ${profile.name}`,
-            description: 'Their birthday is in 3 weeks!!',
-            type: 'general',
-            scheduledFor: giftReminderDate,
-          };
-          
-          const reminderId = await DatabaseService.createReminder(reminderData);
-          
-          // Schedule the notification
-          const { scheduleReminder } = await import('@/services/Scheduler');
-          const result = await scheduleReminder({
-            title: `Get Gift for ${profile.name}`,
-            body: 'Their birthday is in 3 weeks!!',
-            datePick: giftReminderDate,
-            timePick: giftReminderDate,
-            reminderId: reminderId.toString(),
-          });
-          
-          // Update notification ID in reminder
-          if (result.id) {
-            await DatabaseService.updateReminderNotificationId(reminderId, result.id);
-          }
-          
-          // Update profile data with gift reminder info
-          profileData.giftReminderId = reminderId;
-        } catch (giftReminderError) {
-          console.error('Error scheduling gift reminder:', giftReminderError);
-          // Disable gift reminder if scheduling fails
-          profileData.giftReminderEnabled = false;
-          profileData.giftReminderId = null;
+          await DatabaseService.updateProfileGiftReminderStatus(parseInt(id), false, null);
+          console.log('Gift reminder disabled successfully');
+        } catch (error) {
+          console.error('Error disabling gift reminder:', error);
         }
       }
       
-      // If gift reminder is being disabled
-      if (!isGiftReminderEnabled && wasGiftReminderEnabled && existingProfile?.giftReminderId) {
-        try {
-          // Get the reminder to cancel its notification
-          const reminder = await DatabaseService.getReminderById(existingProfile.giftReminderId);
-          if (reminder?.notificationId) {
-            const { cancelById } = await import('@/services/Scheduler');
-            await cancelById(reminder.notificationId);
-          }
-          
-          // Delete the reminder from database
-          await DatabaseService.deleteReminder(existingProfile.giftReminderId);
-          
-          // Clear gift reminder info from profile
-          profileData.giftReminderId = null;
-        } catch (cleanupError) {
-          console.error('Error cleaning up gift reminder:', cleanupError);
+      // Show consolidated success message
+      let alertTitle = 'Profile Updated';
+      let alertMessage = 'Profile updated successfully!';
+      
+      if (birthdayTextResult.scheduled && giftReminderResult.scheduled) {
+        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextResult.date.toLocaleDateString()}.\nGift reminder scheduled for ${giftReminderResult.date.toLocaleDateString()}.`;
+      } else if (birthdayTextResult.scheduled) {
+        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextResult.date.toLocaleDateString()}.`;
+        if (profile.giftReminderEnabled && !giftReminderResult.scheduled) {
+          alertMessage += '\n\nGift reminder could not be scheduled. You can try again later.';
+        }
+      } else if (giftReminderResult.scheduled) {
+        alertMessage += `\n\nGift reminder scheduled for ${giftReminderResult.date.toLocaleDateString()}.`;
+        if (profile.birthdayTextEnabled && !birthdayTextResult.scheduled) {
+          alertMessage += '\n\nBirthday text could not be scheduled. You can try again later.';
+        }
+      } else {
+        // Neither scheduled, but check if they were requested
+        if (profile.birthdayTextEnabled && !birthdayTextResult.scheduled) {
+          alertMessage += '\n\nBirthday text could not be scheduled. You can try again later.';
+        }
+        if (profile.giftReminderEnabled && !giftReminderResult.scheduled) {
+          alertMessage += '\n\nGift reminder could not be scheduled. You can try again later.';
         }
       }
       
-      await DatabaseService.createOrUpdateProfile(profileData);
-      Alert.alert('Success', 'Profile updated successfully', [
+      Alert.alert(alertTitle, alertMessage, [
         { text: 'OK', onPress: () => router.back() }
       ]);
     } catch (error) {

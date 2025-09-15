@@ -127,14 +127,26 @@ export default function CreateProfile() {
 
     setSaving(true);
     try {
-      let profileData = {
+      // First, create the profile to get a valid ID
+      const baseProfileData = {
         ...profile,
         lastContactDate: new Date().toISOString(), // Set to current date
       };
       
-      // Handle birthday text scheduling
+      // Create the profile first to get a valid ID
+      const profileId = await DatabaseService.createOrUpdateProfile(baseProfileData);
+      
+      // Track scheduling results
+      let birthdayTextScheduled = false;
+      let giftReminderScheduled = false;
+      let birthdayTextDate = null;
+      let giftReminderDate = null;
+      
+      // Handle birthday text scheduling independently
       if (profile.birthdayTextEnabled && profile.phone && profile.birthday) {
         try {
+          console.log('Scheduling birthday text for profile:', profileId);
+          
           // Calculate next birthday occurrence
           const [month, day, year] = profile.birthday.split('/').map(num => parseInt(num));
           const currentYear = new Date().getFullYear();
@@ -147,17 +159,12 @@ export default function CreateProfile() {
           
           // Create scheduled text entry
           const scheduledTextData = {
-            profileId: null, // Will be set after profile creation
+            profileId: profileId,
             phoneNumber: profile.phone,
             message: 'Happy Birthday!!',
             scheduledFor: birthdayThisYear,
           };
           
-          // First create the profile to get the ID
-          const profileId = await DatabaseService.createOrUpdateProfile(profileData);
-          
-          // Update scheduled text with profile ID
-          scheduledTextData.profileId = profileId;
           const scheduledTextId = await DatabaseService.createScheduledText(scheduledTextData);
           
           // Schedule the notification
@@ -178,84 +185,105 @@ export default function CreateProfile() {
           // Update profile with birthday text info
           await DatabaseService.updateProfileBirthdayTextStatus(profileId, true, scheduledTextId);
           
-          Alert.alert('Success', `Profile created successfully! Birthday text scheduled for ${birthdayThisYear.toLocaleDateString()}.`, [
-            { text: 'OK', onPress: () => router.back() }
-          ]);
+          birthdayTextScheduled = true;
+          birthdayTextDate = birthdayThisYear;
+          console.log('Birthday text scheduled successfully');
         } catch (birthdayError) {
           console.error('Error scheduling birthday text:', birthdayError);
-          // Still create the profile but without birthday text
-          profileData.birthdayTextEnabled = false;
-          await DatabaseService.createOrUpdateProfile(profileData);
-          Alert.alert('Profile Created', 'Profile created but birthday text could not be scheduled. You can enable it later.', [
-            { text: 'OK', onPress: () => router.back() }
-          ]);
-        }
-      } else {
-        // Normal profile creation without birthday text
-        const profileId = await DatabaseService.createOrUpdateProfile(profileData);
-        
-        // Handle gift reminder scheduling
-        if (profile.giftReminderEnabled && profile.birthday) {
-          try {
-            // Calculate next birthday occurrence
-            const [month, day, year] = profile.birthday.split('/').map(num => parseInt(num));
-            const currentYear = new Date().getFullYear();
-            let birthdayThisYear = new Date(currentYear, month - 1, day, 9, 0, 0, 0); // 9 AM
-            
-            // If birthday has passed this year, schedule for next year
-            if (birthdayThisYear <= new Date()) {
-              birthdayThisYear = new Date(currentYear + 1, month - 1, day, 9, 0, 0, 0);
-            }
-            
-            // Calculate 21 days before birthday
-            const giftReminderDate = new Date(birthdayThisYear);
-            giftReminderDate.setDate(giftReminderDate.getDate() - 21);
-            
-            // Create reminder entry
-            const reminderData = {
-              profileId: profileId,
-              title: `Get Gift for ${profile.name}`,
-              description: 'Their birthday is in 3 weeks!!',
-              type: 'general',
-              scheduledFor: giftReminderDate,
-            };
-            
-            const reminderId = await DatabaseService.createReminder(reminderData);
-            
-            // Schedule the notification
-            const { scheduleReminder } = await import('@/services/Scheduler');
-            const result = await scheduleReminder({
-              title: `Get Gift for ${profile.name}`,
-              body: 'Their birthday is in 3 weeks!!',
-              datePick: giftReminderDate,
-              timePick: giftReminderDate,
-              reminderId: reminderId.toString(),
-            });
-            
-            // Update notification ID in reminder
-            if (result.id) {
-              await DatabaseService.updateReminderNotificationId(reminderId, result.id);
-            }
-            
-            // Update profile with gift reminder info
-            await DatabaseService.updateProfileGiftReminderStatus(profileId, true, reminderId);
-            
-            Alert.alert('Success', `Profile created successfully! Gift reminder scheduled for ${giftReminderDate.toLocaleDateString()}.`, [
-              { text: 'OK', onPress: () => router.back() }
-            ]);
-          } catch (giftReminderError) {
-            console.error('Error scheduling gift reminder:', giftReminderError);
-            // Still create the profile but without gift reminder
-            Alert.alert('Profile Created', 'Profile created but gift reminder could not be scheduled. You can enable it later.', [
-              { text: 'OK', onPress: () => router.back() }
-            ]);
-          }
-        } else {
-          Alert.alert('Success', 'Profile created successfully', [
-            { text: 'OK', onPress: () => router.back() }
-          ]);
+          // Update profile to disable birthday text if scheduling failed
+          await DatabaseService.updateProfileBirthdayTextStatus(profileId, false, null);
         }
       }
+      
+      // Handle gift reminder scheduling independently
+      if (profile.giftReminderEnabled && profile.birthday) {
+        try {
+          console.log('Scheduling gift reminder for profile:', profileId);
+          
+          // Calculate next birthday occurrence
+          const [month, day, year] = profile.birthday.split('/').map(num => parseInt(num));
+          const currentYear = new Date().getFullYear();
+          let birthdayThisYear = new Date(currentYear, month - 1, day, 9, 0, 0, 0); // 9 AM
+          
+          // If birthday has passed this year, schedule for next year
+          if (birthdayThisYear <= new Date()) {
+            birthdayThisYear = new Date(currentYear + 1, month - 1, day, 9, 0, 0, 0);
+          }
+          
+          // Calculate 21 days before birthday
+          const giftReminderDate = new Date(birthdayThisYear);
+          giftReminderDate.setDate(giftReminderDate.getDate() - 21);
+          
+          // Create reminder entry
+          const reminderData = {
+            profileId: profileId,
+            title: `Get Gift for ${profile.name}`,
+            description: 'Their birthday is in 3 weeks!!',
+            type: 'general',
+            scheduledFor: giftReminderDate,
+          };
+          
+          const reminderId = await DatabaseService.createReminder(reminderData);
+          
+          // Schedule the notification
+          const { scheduleReminder } = await import('@/services/Scheduler');
+          const result = await scheduleReminder({
+            title: `Get Gift for ${profile.name}`,
+            body: 'Their birthday is in 3 weeks!!',
+            datePick: giftReminderDate,
+            timePick: giftReminderDate,
+            reminderId: reminderId.toString(),
+            isGiftReminder: true,
+            profileId: profileId.toString(),
+          });
+          
+          // Update notification ID in reminder
+          if (result.id) {
+            await DatabaseService.updateReminderNotificationId(reminderId, result.id);
+          }
+          
+          // Update profile with gift reminder info
+          await DatabaseService.updateProfileGiftReminderStatus(profileId, true, reminderId);
+          
+          giftReminderScheduled = true;
+          giftReminderDate = giftReminderDate;
+          console.log('Gift reminder scheduled successfully');
+        } catch (giftReminderError) {
+          console.error('Error scheduling gift reminder:', giftReminderError);
+          // Update profile to disable gift reminder if scheduling failed
+          await DatabaseService.updateProfileGiftReminderStatus(profileId, false, null);
+        }
+      }
+      
+      // Show consolidated success message
+      let alertTitle = 'Profile Created';
+      let alertMessage = 'Profile created successfully!';
+      
+      if (birthdayTextScheduled && giftReminderScheduled) {
+        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextDate.toLocaleDateString()}.\nGift reminder scheduled for ${giftReminderDate.toLocaleDateString()}.`;
+      } else if (birthdayTextScheduled) {
+        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextDate.toLocaleDateString()}.`;
+        if (profile.giftReminderEnabled) {
+          alertMessage += '\n\nGift reminder could not be scheduled. You can enable it later.';
+        }
+      } else if (giftReminderScheduled) {
+        alertMessage += `\n\nGift reminder scheduled for ${giftReminderDate.toLocaleDateString()}.`;
+        if (profile.birthdayTextEnabled) {
+          alertMessage += '\n\nBirthday text could not be scheduled. You can enable it later.';
+        }
+      } else {
+        // Neither scheduled, but check if they were requested
+        if (profile.birthdayTextEnabled) {
+          alertMessage += '\n\nBirthday text could not be scheduled. You can enable it later.';
+        }
+        if (profile.giftReminderEnabled) {
+          alertMessage += '\n\nGift reminder could not be scheduled. You can enable it later.';
+        }
+      }
+      
+      Alert.alert(alertTitle, alertMessage, [
+        { text: 'OK', onPress: () => router.back() }
+      ]);
     } catch (error) {
       console.error('Error saving profile:', error);
       Alert.alert('Error', 'Failed to create profile');
