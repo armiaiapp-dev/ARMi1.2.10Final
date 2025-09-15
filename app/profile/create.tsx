@@ -127,6 +127,10 @@ export default function CreateProfile() {
 
     setSaving(true);
     try {
+      // Initialize date tracking variables
+      let birthdayTextDate = null;
+      let giftReminderDate = null;
+      
       // First, create the profile to get a valid ID
       const baseProfileData = {
         ...profile,
@@ -139,8 +143,6 @@ export default function CreateProfile() {
       // Track scheduling results
       let birthdayTextScheduled = false;
       let giftReminderScheduled = false;
-      let birthdayTextDate = null;
-      let giftReminderDate = null;
       
       // Handle birthday text scheduling independently
       if (profile.birthdayTextEnabled && profile.phone && profile.birthday) {
@@ -186,7 +188,7 @@ export default function CreateProfile() {
           await DatabaseService.updateProfileBirthdayTextStatus(profileId, true, scheduledTextId);
           
           birthdayTextScheduled = true;
-          birthdayTextDate = birthdayThisYear;
+          birthdayTextDate = new Date(birthdayThisYear);
           console.log('Birthday text scheduled successfully');
         } catch (birthdayError) {
           console.error('Error scheduling birthday text:', birthdayError);
@@ -211,8 +213,8 @@ export default function CreateProfile() {
           }
           
           // Calculate 21 days before birthday
-          const giftReminderDate = new Date(birthdayThisYear);
-          giftReminderDate.setDate(giftReminderDate.getDate() - 21);
+          const calculatedGiftReminderDate = new Date(birthdayThisYear);
+          calculatedGiftReminderDate.setDate(calculatedGiftReminderDate.getDate() - 21);
           
           // Create reminder entry
           const reminderData = {
@@ -220,7 +222,7 @@ export default function CreateProfile() {
             title: `Get Gift for ${profile.name}`,
             description: 'Their birthday is in 3 weeks!!',
             type: 'general',
-            scheduledFor: giftReminderDate,
+            scheduledFor: calculatedGiftReminderDate,
           };
           
           const reminderId = await DatabaseService.createReminder(reminderData);
@@ -230,8 +232,8 @@ export default function CreateProfile() {
           const result = await scheduleReminder({
             title: `Get Gift for ${profile.name}`,
             body: 'Their birthday is in 3 weeks!!',
-            datePick: giftReminderDate,
-            timePick: giftReminderDate,
+            datePick: calculatedGiftReminderDate,
+            timePick: calculatedGiftReminderDate,
             reminderId: reminderId.toString(),
             isGiftReminder: true,
             profileId: profileId.toString(),
@@ -246,7 +248,7 @@ export default function CreateProfile() {
           await DatabaseService.updateProfileGiftReminderStatus(profileId, true, reminderId);
           
           giftReminderScheduled = true;
-          giftReminderDate = giftReminderDate;
+          giftReminderDate = new Date(calculatedGiftReminderDate);
           console.log('Gift reminder scheduled successfully');
         } catch (giftReminderError) {
           console.error('Error scheduling gift reminder:', giftReminderError);
@@ -260,14 +262,14 @@ export default function CreateProfile() {
       let alertMessage = 'Profile created successfully!';
       
       if (birthdayTextScheduled && giftReminderScheduled) {
-        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextDate.toLocaleDateString()}.\nGift reminder scheduled for ${giftReminderDate.toLocaleDateString()}.`;
+        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextDate ? birthdayTextDate.toLocaleDateString() : 'N/A'}.\nGift reminder scheduled for ${giftReminderDate ? giftReminderDate.toLocaleDateString() : 'N/A'}.`;
       } else if (birthdayTextScheduled) {
-        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextDate.toLocaleDateString()}.`;
+        alertMessage += `\n\nBirthday text scheduled for ${birthdayTextDate ? birthdayTextDate.toLocaleDateString() : 'N/A'}.`;
         if (profile.giftReminderEnabled) {
           alertMessage += '\n\nGift reminder could not be scheduled. You can enable it later.';
         }
       } else if (giftReminderScheduled) {
-        alertMessage += `\n\nGift reminder scheduled for ${giftReminderDate.toLocaleDateString()}.`;
+        alertMessage += `\n\nGift reminder scheduled for ${giftReminderDate ? giftReminderDate.toLocaleDateString() : 'N/A'}.`;
         if (profile.birthdayTextEnabled) {
           alertMessage += '\n\nBirthday text could not be scheduled. You can enable it later.';
         }
